@@ -1,21 +1,33 @@
 package com.example.audiorecord;
 
+import static android.media.AudioManager.GET_DEVICES_INPUTS;
+
+import static com.example.audiorecord.RecordPermission.PERMISSIONS_REQUEST_CODE_RECORD_AUDIO;
+import static com.example.audiorecord.RecordPermission.RECORDING_PERMISSIONS;
+
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.media.AudioAttributes;
 import android.media.AudioFormat;
 import android.media.AudioManager;
 import android.media.AudioRecord;
+import android.media.AudioTrack;
 import android.media.MediaRecorder;
+import android.media.AudioDeviceInfo;
+import android.os.Build;
 import android.os.Bundle;
-import android.os.Environment;
-import android.support.v7.app.AppCompatActivity;
 import android.util.Log;
 import android.view.View;
 import android.widget.Button;
 
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.app.ActivityCompat;
+
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
@@ -99,7 +111,7 @@ public class BluetoothRecordActivity extends AppCompatActivity {
 
     private Button stopButton;
 
-    private Button bluetoothButton;
+    private String savedFilePath;
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
@@ -119,30 +131,30 @@ public class BluetoothRecordActivity extends AppCompatActivity {
             @Override
             public void onClick(View v) {
                 stopRecording();
+                playback();
             }
         });
 
         audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
-
-        bluetoothButton = (Button) findViewById(R.id.btnBluetooth);
-        bluetoothButton.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View view) {
-                activateBluetoothSco();
-            }
-        });
     }
 
     @Override
     protected void onResume() {
         super.onResume();
 
-        bluetoothButton.setEnabled(calculateBluetoothButtonState());
+        if (!RecordPermission.checkRecordingPermission(this) ) {
+            ActivityCompat.requestPermissions(this, RECORDING_PERMISSIONS, PERMISSIONS_REQUEST_CODE_RECORD_AUDIO);
+        }
+
+
         startButton.setEnabled(calculateStartRecordButtonState());
         stopButton.setEnabled(calculateStopRecordButtonState());
 
         registerReceiver(bluetoothStateReceiver, new IntentFilter(
                 AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED));
+
+        audioManager.setBluetoothScoOn(true);
+        audioManager.startBluetoothSco();
     }
 
     @Override
@@ -166,7 +178,6 @@ public class BluetoothRecordActivity extends AppCompatActivity {
         recordingThread = new Thread(new RecordingRunnable(), "Recording Thread");
         recordingThread.start();
 
-        bluetoothButton.setEnabled(calculateBluetoothButtonState());
         startButton.setEnabled(calculateStartRecordButtonState());
         stopButton.setEnabled(calculateStopRecordButtonState());
     }
@@ -186,20 +197,8 @@ public class BluetoothRecordActivity extends AppCompatActivity {
 
         recordingThread = null;
 
-        bluetoothButton.setEnabled(calculateBluetoothButtonState());
         startButton.setEnabled(calculateStartRecordButtonState());
         stopButton.setEnabled(calculateStopRecordButtonState());
-    }
-
-    private void activateBluetoothSco() {
-        if (!audioManager.isBluetoothScoAvailableOffCall()) {
-            Log.e(TAG, "SCO ist not available, recording is not possible");
-            return;
-        }
-
-        if (!audioManager.isBluetoothScoOn()) {
-            audioManager.startBluetoothSco();
-        }
     }
 
     private void bluetoothStateChanged(BluetoothState state) {
@@ -209,7 +208,6 @@ public class BluetoothRecordActivity extends AppCompatActivity {
             stopRecording();
         }
 
-        bluetoothButton.setEnabled(calculateBluetoothButtonState());
         startButton.setEnabled(calculateStartRecordButtonState());
         stopButton.setEnabled(calculateStopRecordButtonState());
     }
@@ -219,18 +217,21 @@ public class BluetoothRecordActivity extends AppCompatActivity {
     }
 
     private boolean calculateStartRecordButtonState() {
-        return audioManager.isBluetoothScoOn() && !recordingInProgress.get();
+        return !recordingInProgress.get();
     }
 
     private boolean calculateStopRecordButtonState() {
-        return audioManager.isBluetoothScoOn() && recordingInProgress.get();
+        return recordingInProgress.get();
     }
 
     private class RecordingRunnable implements Runnable {
 
         @Override
         public void run() {
-            final File file = new File(Environment.getExternalStorageDirectory(), "recording.pcm");
+
+            String extDir = getFilesDir().getAbsolutePath();
+            savedFilePath = extDir + "/recording.pcm";
+            final File file = new File(savedFilePath);
             final ByteBuffer buffer = ByteBuffer.allocateDirect(BUFFER_SIZE);
 
             try (final FileOutputStream outStream = new FileOutputStream(file)) {
@@ -266,5 +267,42 @@ public class BluetoothRecordActivity extends AppCompatActivity {
 
     enum BluetoothState {
         AVAILABLE, UNAVAILABLE
+    }
+
+    void playback() {
+
+        int playerBufferSize = AudioTrack.getMinBufferSize(SAMPLING_RATE_IN_HZ, AudioFormat.CHANNEL_OUT_MONO , AUDIO_FORMAT);
+        AudioTrack pcmTrack = new AudioTrack(
+                new AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                        .build(),
+                new AudioFormat.Builder()
+                        .setEncoding(AUDIO_FORMAT)
+                        .setSampleRate(SAMPLING_RATE_IN_HZ)
+                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                        .build(),
+                playerBufferSize,
+                AudioTrack.MODE_STREAM,
+                AudioManager.AUDIO_SESSION_ID_GENERATE
+        );
+
+        pcmTrack.play();
+
+        try {
+            FileInputStream fis = new FileInputStream(savedFilePath);
+
+            byte[] readPCMbytes = new byte[fis.available()];
+
+            fis.read(readPCMbytes);
+
+            //DebugDump120Bytes(readPCMbytes);
+
+            pcmTrack.write(readPCMbytes, 0, readPCMbytes.length);
+        } catch (FileNotFoundException e) {
+            Log.e("PlaybackRecordedFile" , "FileNotFound");
+        } catch (IOException e) {
+            Log.e("PlaybackRecordedFile", "IOException");
+        }
     }
 }
